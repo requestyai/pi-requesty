@@ -13,6 +13,11 @@ function normalizeBaseUrl(baseUrl) {
   return baseUrl.replace(/\/+$/, "");
 }
 
+function modelsUrl(baseUrl) {
+  const base = normalizeBaseUrl(baseUrl);
+  return /\/v\d+$/.test(base) ? `${base}/models` : `${base}/v1/models`;
+}
+
 function readModelsJson() {
   if (!fs.existsSync(MODELS_JSON_PATH)) {
     throw new Error(`${MODELS_JSON_PATH} does not exist`);
@@ -56,7 +61,7 @@ function getRequestyConfig() {
 }
 
 async function discoverModels(provider) {
-  const response = await fetch(`${provider.baseUrl}/models`, {
+  const response = await fetch(modelsUrl(provider.baseUrl), {
     headers: { Authorization: `Bearer ${provider.apiKey}` },
   });
 
