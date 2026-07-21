@@ -9,11 +9,11 @@ const DEFAULT_NAME = "Requesty";
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_MAX_TOKENS = 4096;
 
-function normalizeBaseUrl(baseUrl) {
+export function normalizeBaseUrl(baseUrl) {
   return baseUrl.replace(/\/+$/, "");
 }
 
-function modelsUrl(baseUrl) {
+export function modelsUrl(baseUrl) {
   const base = normalizeBaseUrl(baseUrl);
   return /\/v\d+$/.test(base) ? `${base}/models` : `${base}/v1/models`;
 }
