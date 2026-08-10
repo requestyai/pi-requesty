@@ -175,15 +175,39 @@ describe("extension registration and refreshModels", () => {
     return config;
   }
 
+  /**
+   * Build a RefreshModelsContext that mirrors how pi actually invokes
+   * refreshModels: a `stored` snapshot (read from the provider's model store)
+   * plus a `publish({ persist, update })` that writes the catalog back. There
+   * is deliberately NO `store` object on the context — that was the bug.
+   */
   function makeStore() {
-    let entry;
+    let entry; // ModelsStoreEntry | undefined
+    const publishes = [];
     return {
-      store: {
-        read: async () => entry,
-        write: async (e) => { entry = e; },
-        delete: async () => { entry = undefined; },
+      seed(models) {
+        entry = { models, checkedAt: 1 };
       },
       peek: () => entry,
+      publishes: () => publishes,
+      context(overrides = {}) {
+        const ctx = {
+          credential: undefined,
+          stored: entry ? structuredClone(entry) : undefined,
+          async publish(publication) {
+            publishes.push(publication);
+            if (publication.persist !== undefined) {
+              entry = publication.persist === null ? undefined : structuredClone(publication.persist);
+            }
+            publication.update?.();
+            return true;
+          },
+          allowNetwork: true,
+          signal: new AbortController().signal,
+          ...overrides,
+        };
+        return ctx;
+      },
     };
   }
 
@@ -193,11 +217,11 @@ describe("extension registration and refreshModels", () => {
 
   it("does not fetch without a key and returns the cached list", async () => {
     const config = await captureConfig();
-    const { store } = makeStore();
+    const store = makeStore();
     let fetched = false;
     globalThis.fetch = async () => { fetched = true; return { ok: true, async json() { return { data: [{ id: "nope/model" }] }; } }; };
 
-    const result = await config.refreshModels({ store, allowNetwork: true, credential: undefined });
+    const result = await config.refreshModels(store.context({ allowNetwork: true, credential: undefined }));
 
     assert.deepEqual(result, []);
     assert.equal(fetched, false, "must not fetch (unscoped) without a key");
@@ -205,11 +229,11 @@ describe("extension registration and refreshModels", () => {
 
   it("restores the cached list when network is disabled", async () => {
     const config = await captureConfig();
-    const { store } = makeStore();
-    await store.write({ models: [{ id: "vendor/cached", name: "Cached" }], checkedAt: 1 });
+    const store = makeStore();
+    store.seed([{ id: "vendor/cached", name: "Cached" }]);
     globalThis.fetch = async () => { throw new Error("should not fetch offline"); };
 
-    const result = await config.refreshModels({ store, allowNetwork: false, credential: undefined });
+    const result = await config.refreshModels(store.context({ allowNetwork: false, credential: undefined }));
 
     assert.equal(result.length, 1);
     assert.equal(result[0].id, "vendor/cached");
@@ -217,50 +241,59 @@ describe("extension registration and refreshModels", () => {
 
   it("fetches, caches, and returns discovered models when authenticated", async () => {
     const config = await captureConfig();
-    const { store, peek } = makeStore();
+    const store = makeStore();
     okFetch([{ id: "vendor/live", name: "Live", input_price: 0.000005 }]);
 
-    const result = await config.refreshModels({
-      store,
-      allowNetwork: true,
-      credential: { type: "api_key", key: "secret" },
-    });
+    const result = await config.refreshModels(
+      store.context({ allowNetwork: true, credential: { type: "api_key", key: "secret" } }),
+    );
 
     assert.equal(result.length, 1);
     assert.equal(result[0].id, "vendor/live");
     assert.equal(result[0].cost.input, 5);
     // Persisted with a checkedAt timestamp.
-    const entry = peek();
+    const entry = store.peek();
     assert.equal(entry.models.length, 1);
     assert.equal(typeof entry.checkedAt, "number");
+    // And the persist publication carried the models + checkedAt.
+    const persisted = store.publishes().find((p) => p.persist);
+    assert.ok(persisted, "should publish a persisted catalog");
+    assert.equal(persisted.persist.models.length, 1);
+    assert.equal(typeof persisted.persist.checkedAt, "number");
   });
 
-  it("propagates fetch failures while retaining the previous list on retry", async () => {
+  it("propagates fetch failures while retaining the previous list", async () => {
     const config = await captureConfig();
-    const { store } = makeStore();
+    const store = makeStore();
+    store.seed([{ id: "vendor/prior", name: "Prior" }]);
     globalThis.fetch = async () => ({ ok: false, status: 503, statusText: "Service Unavailable" });
 
     await assert.rejects(
-      config.refreshModels({ store, allowNetwork: true, credential: { type: "api_key", key: "secret" } }),
+      config.refreshModels(store.context({ allowNetwork: true, credential: { type: "api_key", key: "secret" } })),
       /HTTP 503/,
     );
+    // Nothing new was persisted; the prior catalog is untouched.
+    assert.equal(store.peek().models[0].id, "vendor/prior");
+    assert.equal(store.publishes().some((p) => p.persist), false, "must not persist on failure");
   });
 
   it("does not write to the store when aborted", async () => {
     const config = await captureConfig();
-    const { store, peek } = makeStore();
+    const store = makeStore();
+    store.seed([{ id: "vendor/prior", name: "Prior" }]);
     const controller = new AbortController();
     controller.abort();
     okFetch([{ id: "vendor/aborted" }]);
 
-    const result = await config.refreshModels({
-      store,
-      allowNetwork: true,
-      credential: { type: "api_key", key: "secret" },
-      signal: controller.signal,
-    });
+    const result = await config.refreshModels(
+      store.context({
+        allowNetwork: true,
+        credential: { type: "api_key", key: "secret" },
+        signal: controller.signal,
+      }),
+    );
 
-    assert.deepEqual(result, []);
-    assert.equal(peek(), undefined, "store must not be written when aborted");
+    assert.deepEqual(result, [{ id: "vendor/prior", name: "Prior" }], "should serve the cached list when aborted");
+    assert.equal(store.peek().models[0].id, "vendor/prior", "store must not be overwritten when aborted");
   });
 });

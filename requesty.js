@@ -3,9 +3,13 @@
  *
  * Registers the Requesty router (https://router.requesty.ai) as an
  * OpenAI-compatible provider. The model catalog is discovered from
- * <baseUrl>/models and cached through pi's standard provider model store
- * (context.store), so pi refreshes it automatically on startup and when the
- * model picker opens. No manual models.json writes are performed.
+ * <baseUrl>/models and cached through pi's standard provider model store.
+ * The catalog is surfaced via the RefreshModelsContext: `context.stored` (the
+ * last persisted catalog, restored by pi before each refresh phase) and
+ * `context.publish({ persist })` (which writes the refreshed catalog back to
+ * pi's store). pi refreshes it automatically on startup (offline restore
+ * first, then online) and when the model picker opens. No manual models.json
+ * writes are performed.
  *
  * Authentication is resolved by pi in the standard way:
  *   - /login requesty  (stored credential), or
@@ -90,20 +94,31 @@ export default function (pi) {
      *   - on startup, first offline (cache restore) then online (refresh)
      *   - whenever the model picker / model refresh runs
      *
-     * The returned list replaces this provider's extension-provided models.
-     * On failure we rethrow so pi retains the previous list and surfaces the
-     * error; the cache from the last successful refresh is always restored
-     * first so models remain available offline.
+     * The returned list replaces this provider's extension-provided models and
+     * is captured by pi's provider composer. On failure we rethrow so pi
+     * retains the previous list and surfaces the error; the cache from the
+     * last successful refresh is always restored first (via `context.stored`)
+     * so models remain available offline.
+     *
+     * Caching uses pi's standard provider model store, surfaced through the
+     * RefreshModelsContext:
+     *   - `context.stored`  — the last persisted catalog ({ models, checkedAt }),
+     *                          restored for us by pi before each refresh phase.
+     *   - `context.publish({ persist })` — writes the new catalog back to the
+     *                          store so it is reused on the next launch, even
+     *                          offline or before the next refresh completes.
+     * (There is no `context.store` object to read/write directly.)
      *
      * The API key is required for discovery: an unauthenticated /models call
      * returns Requesty's full public catalog (~hundreds of models), while the
      * authenticated call returns only the models this account has enabled.
-     * We never want the unscoped list, so we no-op (return cached) without a key.
+     * We never want the unscoped list, so without a key we return the cached
+     * catalog (possibly empty on first run) and skip the network entirely.
      */
     async refreshModels(context) {
-      const stored = await context.store.read();
-      const cached = stored?.models ?? [];
+      const cached = Array.isArray(context.stored?.models) ? context.stored.models : [];
 
+      // Offline restore, or already aborted: serve the cached catalog only.
       if (!context.allowNetwork || context.signal?.aborted) {
         return cached;
       }
@@ -125,7 +140,10 @@ export default function (pi) {
         return cached;
       }
 
-      await context.store.write({ models: discovered, checkedAt: Date.now() });
+      // Persist the refreshed catalog; the returned list updates the in-memory
+      // provider model set. (Aborted publishes are rejected by pi, so the
+      // previous catalog remains untouched.)
+      await context.publish({ persist: { models: discovered, checkedAt: Date.now() } });
       return discovered;
     },
   });
