@@ -9,8 +9,13 @@ const DEFAULT_NAME = "Requesty";
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_MAX_TOKENS = 4096;
 
-function normalizeBaseUrl(baseUrl) {
+export function normalizeBaseUrl(baseUrl) {
   return baseUrl.replace(/\/+$/, "");
+}
+
+export function modelsUrl(baseUrl) {
+  const base = normalizeBaseUrl(baseUrl);
+  return /\/v\d+$/.test(base) ? `${base}/models` : `${base}/v1/models`;
 }
 
 function readModelsJson() {
@@ -56,7 +61,7 @@ function getRequestyConfig() {
 }
 
 async function discoverModels(provider) {
-  const response = await fetch(`${provider.baseUrl}/models`, {
+  const response = await fetch(modelsUrl(provider.baseUrl), {
     headers: { Authorization: `Bearer ${provider.apiKey}` },
   });
 
