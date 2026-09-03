@@ -76,6 +76,8 @@ async function discoverModels(provider) {
       name: typeof model.name === "string" && model.name.length > 0 ? model.name : model.id,
       reasoning: model.supports_reasoning === true,
       input: model.supports_vision === true ? ["text", "image"] : ["text"],
+      // non-anthropic/ models must use OpenAI format regardless of provider api setting
+      ...(!model.id.startsWith("anthropic/") && { api: "openai-completions" }),
       cost: {
         input: pricePerMillionTokens(model.input_price),
         output: pricePerMillionTokens(model.output_price),
@@ -106,6 +108,7 @@ function updateModelsJson(data, models) {
       name: model.name,
       reasoning: model.reasoning,
       input: model.input,
+      ...(model.api && { api: model.api }),
       cost: model.cost,
       contextWindow: model.contextWindow,
       maxTokens: model.maxTokens,
