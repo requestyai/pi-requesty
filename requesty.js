@@ -71,20 +71,29 @@ async function discoverModels(provider) {
 
   return payload.data
     .filter((model) => model && typeof model.id === "string" && model.id.length > 0)
-    .map((model) => ({
-      id: model.id,
-      name: typeof model.name === "string" && model.name.length > 0 ? model.name : model.id,
-      reasoning: model.supports_reasoning === true,
-      input: model.supports_vision === true ? ["text", "image"] : ["text"],
-      cost: {
-        input: pricePerMillionTokens(model.input_price),
-        output: pricePerMillionTokens(model.output_price),
-        cacheRead: pricePerMillionTokens(model.cached_price),
-        cacheWrite: pricePerMillionTokens(model.caching_price),
-      },
-      contextWindow: model.context_window || DEFAULT_CONTEXT_WINDOW,
-      maxTokens: model.max_output_tokens || DEFAULT_MAX_TOKENS,
-    }));
+    .map((model) => {
+      const reasoning = model.supports_reasoning === true;
+      return {
+        id: model.id,
+        name: typeof model.name === "string" && model.name.length > 0 ? model.name : model.id,
+        reasoning,
+        // pi exposes the extended `max` thinking level only when a model declares it in
+        // `thinkingLevelMap`; standard levels (`minimal`..`high`) are implicit via pi's
+        // provider default mapping. `max` is a global Requesty effort value normalized
+        // per backend (OpenAI -> high, Anthropic/Gemini -> token budget), so it is safe
+        // to advertise `max` for every reasoning-capable model.
+        thinkingLevelMap: reasoning ? { max: "max" } : undefined,
+        input: model.supports_vision === true ? ["text", "image"] : ["text"],
+        cost: {
+          input: pricePerMillionTokens(model.input_price),
+          output: pricePerMillionTokens(model.output_price),
+          cacheRead: pricePerMillionTokens(model.cached_price),
+          cacheWrite: pricePerMillionTokens(model.caching_price),
+        },
+        contextWindow: model.context_window || DEFAULT_CONTEXT_WINDOW,
+        maxTokens: model.max_output_tokens || DEFAULT_MAX_TOKENS,
+      };
+    });
 }
 
 function pricePerMillionTokens(value) {
@@ -105,6 +114,7 @@ function updateModelsJson(data, models) {
       id: model.id,
       name: model.name,
       reasoning: model.reasoning,
+      thinkingLevelMap: model.thinkingLevelMap,
       input: model.input,
       cost: model.cost,
       contextWindow: model.contextWindow,
