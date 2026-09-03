@@ -1,9 +1,12 @@
 {
   "name": "pi-requesty",
-  "version": "0.2.7",
-  "description": "The official Requesty extension for the Pi Coding Agent",
+  "version": "0.3.0",
+  "description": "Requesty provider extension for the Pi Coding Agent",
   "type": "module",
   "main": "requesty.js",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
   "keywords": ["pi-package", "pi", "pi-coding-agent", "pi-extensions", "requesty", "openai-compatible", "models"],
   "license": "MIT",
   "peerDependencies": {

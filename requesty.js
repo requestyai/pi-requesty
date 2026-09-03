@@ -1,63 +1,66 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+/**
+ * pi-requesty: Requesty provider extension for the Pi Coding Agent.
+ *
+ * Registers the Requesty router (https://router.requesty.ai) as an
+ * OpenAI-compatible provider. The model catalog is discovered from
+ * <baseUrl>/models and cached through pi's standard provider model store.
+ * The catalog is surfaced via the RefreshModelsContext: `context.stored` (the
+ * last persisted catalog, restored by pi before each refresh phase) and
+ * `context.publish({ persist })` (which writes the refreshed catalog back to
+ * pi's store). pi refreshes it automatically on startup (offline restore
+ * first, then online) and when the model picker opens. No manual models.json
+ * writes are performed.
+ *
+ * Authentication is resolved by pi in the standard way:
+ *   - /login requesty  (stored credential), or
+ *   - REQUESTY_API_KEY environment variable
+ *
+ * Do not configure the provider in ~/.pi/agent/models.json; the extension
+ * defines the endpoint and (optionally) the account's allowed models are
+ * discovered at runtime.
+ */
 
-const MODELS_JSON_PATH = path.join(os.homedir(), ".pi", "agent", "models.json");
 const PROVIDER = "requesty";
 const DEFAULT_BASE_URL = "https://router.requesty.ai/v1";
 const DEFAULT_NAME = "Requesty";
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_MAX_TOKENS = 4096;
 
-function normalizeBaseUrl(baseUrl) {
+export function normalizeBaseUrl(baseUrl) {
   return baseUrl.replace(/\/+$/, "");
 }
 
-function readModelsJson() {
-  if (!fs.existsSync(MODELS_JSON_PATH)) {
-    throw new Error(`${MODELS_JSON_PATH} does not exist`);
-  }
-
-  const data = JSON.parse(fs.readFileSync(MODELS_JSON_PATH, "utf8"));
-  if (!data.providers || typeof data.providers !== "object") {
-    throw new Error(`${MODELS_JSON_PATH} does not define providers`);
-  }
-
-  return data;
+/** Requesty prices are per-token; pi expects per-million-token rates. */
+export function pricePerMillionTokens(value) {
+  return (value ?? 0) * 1_000_000;
 }
 
-function getRequestyConfig() {
-  const data = readModelsJson();
-  const provider = data.providers[PROVIDER];
-
-  if (!provider || typeof provider !== "object") {
-    throw new Error(`${MODELS_JSON_PATH} does not define providers.${PROVIDER}`);
-  }
-
-  if (typeof provider.apiKey !== "string" || provider.apiKey.length === 0) {
-    throw new Error(`providers.${PROVIDER}.apiKey must be set in ${MODELS_JSON_PATH}`);
-  }
-
-  const name = typeof provider.name === "string" && provider.name.length > 0 ? provider.name : DEFAULT_NAME;
-
-  const baseUrl = normalizeBaseUrl(
-    typeof provider.baseUrl === "string" && provider.baseUrl.length > 0 ? provider.baseUrl : DEFAULT_BASE_URL,
-  );
-
+/** Map a Requesty model descriptor to pi's ProviderModelConfig shape. */
+export function toModel(model) {
   return {
-    data,
-    provider: {
-      ...provider,
-      name: name,
-      baseUrl: baseUrl,
-      apiKey: provider.apiKey,
+    id: model.id,
+    name: typeof model.name === "string" && model.name.length > 0 ? model.name : model.id,
+    reasoning: model.supports_reasoning === true,
+    input: model.supports_vision === true ? ["text", "image"] : ["text"],
+    cost: {
+      input: pricePerMillionTokens(model.input_price),
+      output: pricePerMillionTokens(model.output_price),
+      cacheRead: pricePerMillionTokens(model.cached_price),
+      cacheWrite: pricePerMillionTokens(model.caching_price),
     },
+    contextWindow: model.context_window || DEFAULT_CONTEXT_WINDOW,
+    maxTokens: model.max_output_tokens || DEFAULT_MAX_TOKENS,
   };
 }
 
-async function discoverModels(provider) {
-  const response = await fetch(`${provider.baseUrl}/models`, {
-    headers: { Authorization: `Bearer ${provider.apiKey}` },
+/**
+ * Discover models from the Requesty /models endpoint.
+ * The endpoint is OpenAI-compatible ({ data: [...] }).
+ */
+export async function discoverModels(baseUrl, apiKey, signal) {
+  const response = await fetch(`${baseUrl}/models`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal,
   });
 
   if (!response.ok) {
@@ -71,81 +74,77 @@ async function discoverModels(provider) {
 
   return payload.data
     .filter((model) => model && typeof model.id === "string" && model.id.length > 0)
-    .map((model) => ({
-      id: model.id,
-      name: typeof model.name === "string" && model.name.length > 0 ? model.name : model.id,
-      reasoning: model.supports_reasoning === true,
-      input: model.supports_vision === true ? ["text", "image"] : ["text"],
-      cost: {
-        input: pricePerMillionTokens(model.input_price),
-        output: pricePerMillionTokens(model.output_price),
-        cacheRead: pricePerMillionTokens(model.cached_price),
-        cacheWrite: pricePerMillionTokens(model.caching_price),
-      },
-      contextWindow: model.context_window || DEFAULT_CONTEXT_WINDOW,
-      maxTokens: model.max_output_tokens || DEFAULT_MAX_TOKENS,
-    }));
+    .map(toModel);
 }
 
-function pricePerMillionTokens(value) {
-  return (value ?? 0) * 1_000_000;
-}
+export default function (pi) {
+  const baseUrl = normalizeBaseUrl(DEFAULT_BASE_URL);
 
-function writeModelsJson(data) {
-  fs.mkdirSync(path.dirname(MODELS_JSON_PATH), { recursive: true });
-  const tmpPath = `${MODELS_JSON_PATH}.tmp`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-  fs.renameSync(tmpPath, MODELS_JSON_PATH);
-}
+  pi.registerProvider(PROVIDER, {
+    name: DEFAULT_NAME,
+    baseUrl,
+    apiKey: "$REQUESTY_API_KEY",
+    api: "openai-completions",
+    // Baseline catalog is empty; models are populated dynamically by
+    // refreshModels and persisted in pi's provider model store.
+    models: [],
 
-function updateModelsJson(data, models) {
-  data.providers[PROVIDER] = {
-    ...data.providers[PROVIDER],
-    models: models.map((model) => ({
-      id: model.id,
-      name: model.name,
-      reasoning: model.reasoning,
-      input: model.input,
-      cost: model.cost,
-      contextWindow: model.contextWindow,
-      maxTokens: model.maxTokens,
-    })),
-  };
-  writeModelsJson(data);
-}
+    /**
+     * Standard pi model refresh with caching. pi calls this automatically:
+     *   - on startup, first offline (cache restore) then online (refresh)
+     *   - whenever the model picker / model refresh runs
+     *
+     * The returned list replaces this provider's extension-provided models and
+     * is captured by pi's provider composer. On failure we rethrow so pi
+     * retains the previous list and surfaces the error; the cache from the
+     * last successful refresh is always restored first (via `context.stored`)
+     * so models remain available offline.
+     *
+     * Caching uses pi's standard provider model store, surfaced through the
+     * RefreshModelsContext:
+     *   - `context.stored`  — the last persisted catalog ({ models, checkedAt }),
+     *                          restored for us by pi before each refresh phase.
+     *   - `context.publish({ persist })` — writes the new catalog back to the
+     *                          store so it is reused on the next launch, even
+     *                          offline or before the next refresh completes.
+     * (There is no `context.store` object to read/write directly.)
+     *
+     * The API key is required for discovery: an unauthenticated /models call
+     * returns Requesty's full public catalog (~hundreds of models), while the
+     * authenticated call returns only the models this account has enabled.
+     * We never want the unscoped list, so without a key we return the cached
+     * catalog (possibly empty on first run) and skip the network entirely.
+     */
+    async refreshModels(context) {
+      const cached = Array.isArray(context.stored?.models) ? context.stored.models : [];
 
-export default async function (pi) {
-  pi.registerCommand("requesty-models-sync", {
-    description: "Dynamically discover Requesty models and update the local models.json.",
-    async handler(_args, ctx) {
-      ctx.ui.setStatus("requesty-models-sync", "Discovering Requesty models...");
-
-      try {
-        const { data, provider } = getRequestyConfig();
-        const models = await discoverModels(provider);
-        updateModelsJson(data, models);
-        ctx.ui.notify(`Discovered ${models.length} Requesty model(s). Run /reload to use models.json changes.`, "success");
-      } catch (error) {
-        ctx.ui.notify(`Discovery failed: ${error instanceof Error ? error.message : String(error)}`, "error");
-      } finally {
-        ctx.ui.setStatus("requesty-models-sync", undefined);
+      // Offline restore, or already aborted: serve the cached catalog only.
+      if (!context.allowNetwork || context.signal?.aborted) {
+        return cached;
       }
+
+      const apiKey =
+        context.credential?.type === "api_key" && typeof context.credential.key === "string"
+          ? context.credential.key
+          : undefined;
+
+      // No key resolved: pi normally skips refresh in this case, but guard
+      // defensively so we never fall back to the unauthenticated (unscoped)
+      // catalog. Return the cached list (possibly empty on first run).
+      if (!apiKey) {
+        return cached;
+      }
+
+      const discovered = await discoverModels(baseUrl, apiKey, context.signal);
+      if (context.signal?.aborted) {
+        return cached;
+      }
+
+      // Persist the refreshed catalog; the returned list updates the in-memory
+      // provider model set. (Aborted publishes are rejected by pi, so the
+      // previous catalog remains untouched.)
+      await context.publish({ persist: { models: discovered, checkedAt: Date.now() } });
+      return discovered;
     },
   });
-
-  try {
-    const { provider } = getRequestyConfig();
-    const models = await discoverModels(provider);
-
-    if (models.length > 0) {
-      pi.registerProvider(PROVIDER, {
-        ...provider,
-        models,
-      });
-    }
-  } catch (error) {
-    console.warn(
-      `[pi-requesty-model-discovery] startup discovery failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
 }
