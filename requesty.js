@@ -14,7 +14,17 @@ const DEFAULT_MAX_TOKENS = 4096;
 const DISCOVERY_TIMEOUT_MS = 10_000;
 
 function normalizeBaseUrl(baseUrl) {
-  return baseUrl.replace(/\/+$/, "");
+  let url;
+  try {
+    url = new URL(baseUrl.trim());
+  } catch {
+    throw new Error("Requesty base URL must be a full URL, for example https://router.eu.requesty.ai/v1");
+  }
+  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error("Requesty base URL must use HTTP(S), without credentials, query parameters, or a fragment");
+  }
+  if (url.pathname === "/") url.pathname = "/v1";
+  return url.toString().replace(/\/+$/, "");
 }
 
 /**
@@ -81,7 +91,8 @@ function getRequestyConfig(options = {}) {
   const name = typeof provider.name === "string" && provider.name.length > 0 ? provider.name : DEFAULT_NAME;
 
   const baseUrl = normalizeBaseUrl(
-    typeof provider.baseUrl === "string" && provider.baseUrl.length > 0 ? provider.baseUrl : DEFAULT_BASE_URL,
+    process.env.REQUESTY_BASE_URL ||
+      (typeof provider.baseUrl === "string" && provider.baseUrl.length > 0 ? provider.baseUrl : DEFAULT_BASE_URL),
   );
 
   // pi rejects a provider without `api`, which is what a missing models.json gives.
@@ -117,6 +128,15 @@ async function fetchModelList({ baseUrl, apiKey }, path) {
   }
 
   if (!response.ok) {
+    if (response.status === 403) {
+      const body = await response.json().catch(() => null);
+      if (typeof body?.message === "string" && /regional domain/i.test(body.message)) {
+        throw new Error(
+          `Requesty requires a regional endpoint. Set providers.requesty.baseUrl in ~/.pi/agent/models.json ` +
+          `or REQUESTY_BASE_URL (for example https://router.eu.requesty.ai/v1). Current endpoint: ${provider.baseUrl}`,
+        );
+      }
+    }
     throw new Error(`HTTP ${response.status} ${response.statusText}`);
   }
 
