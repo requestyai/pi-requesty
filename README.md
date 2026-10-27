@@ -87,6 +87,18 @@ timeout, because it runs before pi finishes loading. Without a credential discov
 skipped silently: pi resolves credentials for inference itself, and the models already
 listed in `models.json` keep working. The key is never written to `models.json`.
 
+### Regional and custom endpoints
+
+For an EU organization, set `providers.requesty.baseUrl` to `https://router.eu.requesty.ai/v1` in `models.json`, or override it when launching pi:
+
+```bash
+REQUESTY_BASE_URL="https://router.eu.requesty.ai/v1" pi
+```
+
+Endpoint precedence is **`REQUESTY_BASE_URL` → `providers.requesty.baseUrl` → `https://router.requesty.ai/v1`**. The environment override is not written to `models.json`, so keep it set when launching pi.
+
+The URL must use HTTP(S), without embedded credentials, query parameters, or a fragment. Trailing slashes are removed. Write the URL with or without `/v1`: model discovery always uses `/v1/models`, and with `"api": "anthropic-messages"` a trailing `/v1` is dropped for inference because pi's Anthropic client adds `/v1/messages` itself.
+
 ## Command
 
 Inside pi:

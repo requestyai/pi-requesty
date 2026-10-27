@@ -14,7 +14,24 @@ const DEFAULT_MAX_TOKENS = 4096;
 const DISCOVERY_TIMEOUT_MS = 10_000;
 
 function normalizeBaseUrl(baseUrl) {
-  return baseUrl.replace(/\/+$/, "");
+  let url;
+  try {
+    url = new URL(baseUrl.trim());
+  } catch {
+    throw new Error("Requesty base URL must be a full URL, for example https://router.eu.requesty.ai/v1");
+  }
+  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error("Requesty base URL must use HTTP(S), without credentials, query parameters, or a fragment");
+  }
+  return url.toString().replace(/\/+$/, "");
+}
+
+function withV1(baseUrl) {
+  return new URL(baseUrl).pathname === "/" ? `${baseUrl}/v1` : baseUrl;
+}
+
+function withoutV1(baseUrl) {
+  return baseUrl.replace(/\/v1$/, "");
 }
 
 /**
@@ -80,18 +97,23 @@ function getRequestyConfig(options = {}) {
 
   const name = typeof provider.name === "string" && provider.name.length > 0 ? provider.name : DEFAULT_NAME;
 
-  const baseUrl = normalizeBaseUrl(
-    typeof provider.baseUrl === "string" && provider.baseUrl.length > 0 ? provider.baseUrl : DEFAULT_BASE_URL,
+  const configuredUrl = normalizeBaseUrl(
+    process.env.REQUESTY_BASE_URL ||
+      (typeof provider.baseUrl === "string" && provider.baseUrl.length > 0 ? provider.baseUrl : DEFAULT_BASE_URL),
   );
 
   // pi rejects a provider without `api`, which is what a missing models.json gives.
   const api = typeof provider.api === "string" && provider.api.length > 0 ? provider.api : DEFAULT_API;
+
+  // The Anthropic client appends /v1/messages itself, but the model lists always live under /v1.
+  const baseUrl = api === "anthropic-messages" ? withoutV1(configuredUrl) : withV1(configuredUrl);
 
   const resolved = resolveRequestyKey(provider, options);
 
   return {
     data,
     provider: { ...provider, name, baseUrl, api, headers: withDefaultHeaders(provider.headers) },
+    modelsUrl: withV1(configuredUrl),
     key: resolved.key,
     keySource: resolved.source,
     keyProblem: resolved.key ? undefined : resolved.reason,
@@ -241,14 +263,14 @@ export default async function (pi) {
       ctx.ui.setStatus("requesty-models-sync", "Discovering Requesty models...");
 
       try {
-        const { data, provider, key, keySource, keyProblem } = getRequestyConfig();
+        const { data, provider, modelsUrl, key, keySource, keyProblem } = getRequestyConfig();
 
         if (!key) {
           ctx.ui.notify(`No Requesty credential available.\n\n${keyProblem}\n\n${KEY_HELP}`, "error");
           return;
         }
 
-        const models = await discoverModels({ baseUrl: provider.baseUrl, apiKey: key });
+        const models = await discoverModels({ baseUrl: modelsUrl, apiKey: key });
         updateModelsJson(data, models);
         ctx.ui.notify(
           `Discovered ${models.length} Requesty model(s) using the key from ${keySource}. Run /reload to use models.json changes.`,
@@ -263,7 +285,7 @@ export default async function (pi) {
   });
 
   try {
-    const { provider, key } = getRequestyConfig();
+    const { provider, modelsUrl, key } = getRequestyConfig();
 
     // No credential is not a failure: Pi resolves credentials for inference
     // itself, and models already listed in models.json keep working. Discovery
@@ -272,7 +294,7 @@ export default async function (pi) {
       return;
     }
 
-    const models = await discoverModels({ baseUrl: provider.baseUrl, apiKey: key });
+    const models = await discoverModels({ baseUrl: modelsUrl, apiKey: key });
 
     if (models.length > 0) {
       pi.registerProvider(PROVIDER, {
