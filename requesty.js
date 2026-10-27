@@ -1,190 +1,100 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+// Pi exposes this entrypoint to extensions in both Node and bundled builds.
+import { createProvider, envApiKeyAuth, openAICompletionsApi } from "@earendil-works/pi-ai/compat";
+import { fetchModels } from "./models.js";
+import { DEFAULT_BASE_URL, EU_BASE_URL, normalizeBaseUrl } from "./endpoint.js";
 
-const MODELS_JSON_PATH = path.join(os.homedir(), ".pi", "agent", "models.json");
-const PROVIDER = "requesty";
-const DEFAULT_BASE_URL = "https://router.requesty.ai/v1";
-const DEFAULT_NAME = "Requesty";
-const DEFAULT_CONTEXT_WINDOW = 128000;
-const DEFAULT_MAX_TOKENS = 4096;
-
-function normalizeBaseUrl(baseUrl) {
-  return baseUrl.replace(/\/+$/, "");
-}
-
-function readModelsJson() {
-  if (!fs.existsSync(MODELS_JSON_PATH)) {
-    throw new Error(`${MODELS_JSON_PATH} does not exist`);
-  }
-
-  const data = JSON.parse(fs.readFileSync(MODELS_JSON_PATH, "utf8"));
-  if (!data.providers || typeof data.providers !== "object") {
-    throw new Error(`${MODELS_JSON_PATH} does not define providers`);
-  }
-
-  return data;
-}
-
-function getRequestyConfig() {
-  const data = readModelsJson();
-  const provider = data.providers[PROVIDER];
-
-  if (!provider || typeof provider !== "object") {
-    throw new Error(`${MODELS_JSON_PATH} does not define providers.${PROVIDER}`);
-  }
-
-  if (typeof provider.apiKey !== "string" || provider.apiKey.length === 0) {
-    throw new Error(`providers.${PROVIDER}.apiKey must be set in ${MODELS_JSON_PATH}`);
-  }
-
-  const name = typeof provider.name === "string" && provider.name.length > 0 ? provider.name : DEFAULT_NAME;
-
-  const baseUrl = normalizeBaseUrl(
-    typeof provider.baseUrl === "string" && provider.baseUrl.length > 0 ? provider.baseUrl : DEFAULT_BASE_URL,
-  );
-
-  return {
-    data,
-    provider: {
-      ...provider,
-      name: name,
-      baseUrl: baseUrl,
-      apiKey: provider.apiKey,
-    },
-  };
-}
-
-async function fetchModelList(provider, path) {
-  const response = await fetch(`${provider.baseUrl}${path}`, {
-    headers: { Authorization: `Bearer ${provider.apiKey}` },
-  });
-
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status} ${response.statusText}`);
-  }
-
-  const payload = await response.json();
-  if (!payload || !Array.isArray(payload.data)) {
-    throw new Error("Expected OpenAI-compatible response with a data array");
-  }
-
-  return payload.data;
-}
-
-async function discoverModels(provider) {
-  const [plainResult, managedResult] = await Promise.allSettled([
-    fetchModelList(provider, "/models"),
-    fetchModelList(provider, "/models/managed"),
-  ]);
-
-  // /models is required; managed policies are optional so a failure there doesn't drop every model.
-  if (plainResult.status === "rejected") {
-    throw plainResult.reason;
-  }
-
-  const plain = plainResult.value;
-  let managed = [];
-  if (managedResult.status === "fulfilled") {
-    managed = managedResult.value;
-  } else {
-    const reason = managedResult.reason instanceof Error ? managedResult.reason.message : String(managedResult.reason);
-    console.warn(`[pi-requesty-model-discovery] managed policies discovery failed: ${reason}`);
-  }
-
-  const byId = new Map();
-  for (const model of [...plain, ...managed]) {
-    if (model && typeof model.id === "string" && model.id.length > 0 && !byId.has(model.id)) {
-      byId.set(model.id, model);
-    }
-  }
-
-  return [...byId.values()]
-    .map((model) => {
-      const reasoning = model.supports_reasoning === true;
-      return {
-        id: model.id,
-        name: typeof model.name === "string" && model.name.length > 0 ? model.name : model.id,
-        reasoning,
-        // pi exposes the extended `max` thinking level only when a model declares it in
-        // `thinkingLevelMap`; standard levels (`minimal`..`high`) are implicit via pi's
-        // provider default mapping. `max` is a global Requesty effort value normalized
-        // per backend (OpenAI -> high, Anthropic/Gemini -> token budget), so it is safe
-        // to advertise `max` for every reasoning-capable model.
-        thinkingLevelMap: reasoning ? { max: "max" } : undefined,
-        input: model.supports_vision === true ? ["text", "image"] : ["text"],
-        cost: {
-          input: pricePerMillionTokens(model.input_price),
-          output: pricePerMillionTokens(model.output_price),
-          cacheRead: pricePerMillionTokens(model.cached_price),
-          cacheWrite: pricePerMillionTokens(model.caching_price),
-        },
-        contextWindow: model.context_window || DEFAULT_CONTEXT_WINDOW,
-        maxTokens: model.max_output_tokens || DEFAULT_MAX_TOKENS,
-      };
+export function requestyProvider() {
+  const apiKey = envApiKeyAuth("Requesty API key", ["REQUESTY_API_KEY"]);
+  const login = apiKey.login;
+  const resolve = apiKey.resolve;
+  apiKey.login = async (interaction) => {
+    interaction.notify({
+      type: "info",
+      message: "Create an API key in the Requesty dashboard.",
+      links: [{ url: "https://app.requesty.ai/api-keys", label: "Requesty API keys" }],
     });
-}
-
-function pricePerMillionTokens(value) {
-  return (value ?? 0) * 1_000_000;
-}
-
-function writeModelsJson(data) {
-  fs.mkdirSync(path.dirname(MODELS_JSON_PATH), { recursive: true });
-  const tmpPath = `${MODELS_JSON_PATH}.tmp`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-  fs.renameSync(tmpPath, MODELS_JSON_PATH);
-}
-
-function updateModelsJson(data, models) {
-  data.providers[PROVIDER] = {
-    ...data.providers[PROVIDER],
-    models: models.map((model) => ({
-      id: model.id,
-      name: model.name,
-      reasoning: model.reasoning,
-      thinkingLevelMap: model.thinkingLevelMap,
-      input: model.input,
-      cost: model.cost,
-      contextWindow: model.contextWindow,
-      maxTokens: model.maxTokens,
-    })),
+    const credential = await login(interaction);
+    credential.key = credential.key.trim();
+    if (!credential.key) throw new Error("Requesty API key must not be empty.");
+    const endpoint = await interaction.prompt({
+      type: "select",
+      message: "Which Requesty endpoint does your organization use?",
+      options: [
+        { id: "default", label: "Default / configured", description: "Use REQUESTY_BASE_URL or models.json; otherwise the global endpoint" },
+        { id: "eu", label: "EU", description: EU_BASE_URL },
+        { id: "custom", label: "Custom URL", description: "Another regional endpoint or proxy" },
+      ],
+    });
+    interaction.signal.throwIfAborted();
+    if (endpoint === "eu" || endpoint === "custom") {
+      const value = endpoint === "eu" ? EU_BASE_URL : await interaction.prompt({
+        type: "text",
+        message: "Requesty base URL",
+        placeholder: EU_BASE_URL,
+      });
+      interaction.signal.throwIfAborted();
+      credential.env = { REQUESTY_BASE_URL: normalizeBaseUrl(value) };
+    } else if (endpoint !== "default") {
+      throw new Error("Invalid Requesty endpoint selection.");
+    }
+    return credential;
   };
-  writeModelsJson(data);
+
+  apiKey.resolve = async (input) => {
+    const result = await resolve(input);
+    if (!result) return undefined;
+    const endpoint = input.credential?.env?.REQUESTY_BASE_URL ?? await input.ctx.env("REQUESTY_BASE_URL");
+    input.signal.throwIfAborted();
+    if (!endpoint) return result;
+    const baseUrl = normalizeBaseUrl(endpoint);
+    return {
+      ...result,
+      auth: { ...result.auth, baseUrl },
+      env: { ...result.env, REQUESTY_BASE_URL: baseUrl },
+    };
+  };
+
+  return createProvider({
+    id: "requesty",
+    name: "Requesty",
+    baseUrl: DEFAULT_BASE_URL,
+    auth: { apiKey },
+    models: [],
+    fetchModels,
+    api: openAICompletionsApi(),
+  });
 }
 
-export default async function (pi) {
-  pi.registerCommand("requesty-models-sync", {
-    description: "Dynamically discover Requesty models and update the local models.json.",
-    async handler(_args, ctx) {
-      ctx.ui.setStatus("requesty-models-sync", "Discovering Requesty models...");
+export default function (pi) {
+  pi.registerProvider(requestyProvider());
 
+  const refresh = {
+    description: "Refresh Requesty's model catalog and update available models immediately",
+    async handler(_args, ctx) {
+      ctx.ui.setStatus("requesty-refresh", "Refreshing Requesty models…");
       try {
-        const { data, provider } = getRequestyConfig();
-        const models = await discoverModels(provider);
-        updateModelsJson(data, models);
-        ctx.ui.notify(`Discovered ${models.length} Requesty model(s). Run /reload to use models.json changes.`, "success");
+        if (!(await ctx.modelRegistry.getApiKeyForProvider("requesty"))) {
+          ctx.ui.notify("Run /login requesty or set REQUESTY_API_KEY first.", "warning");
+          return;
+        }
+        const result = await ctx.modelRegistry.refresh({
+          providers: ["requesty"],
+          allowNetwork: true,
+          force: true,
+        });
+        const error = result.errors.get("requesty");
+        if (error) throw error;
+        if (result.aborted) throw new Error("Model refresh was cancelled.");
+        const count = ctx.modelRegistry.getAll().filter((model) => model.provider === "requesty").length;
+        ctx.ui.notify(`Registered ${count} Requesty model(s). Select one with /model.`, "info");
       } catch (error) {
-        ctx.ui.notify(`Discovery failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+        ctx.ui.notify(`Requesty refresh failed: ${error.message}`, "error");
       } finally {
-        ctx.ui.setStatus("requesty-models-sync", undefined);
+        ctx.ui.setStatus("requesty-refresh", undefined);
       }
     },
-  });
-
-  try {
-    const { provider } = getRequestyConfig();
-    const models = await discoverModels(provider);
-
-    if (models.length > 0) {
-      pi.registerProvider(PROVIDER, {
-        ...provider,
-        models,
-      });
-    }
-  } catch (error) {
-    console.warn(
-      `[pi-requesty-model-discovery] startup discovery failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
+  };
+  pi.registerCommand("requesty-refresh", refresh);
+  // Preserve the existing command without rewriting models.json or requiring /reload.
+  pi.registerCommand("requesty-models-sync", refresh);
 }
