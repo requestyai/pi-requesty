@@ -28,9 +28,33 @@ pi -e ./pi-requesty
 
 ## Configuration
 
-The extension only reads the `requesty` provider from `~/.pi/agent/models.json`.
+The extension resolves the `requesty` key from the same two sources pi falls back
+through, in this order:
 
-Example:
+1. a stored `api_key` credential in the agent directory's `auth.json`
+2. `providers.requesty.apiKey` in `models.json`
+
+(A runtime `--api-key` is not consulted: model discovery calls `<baseUrl>/models`
+directly, outside pi's request pipeline. A stored credential that cannot be
+resolved — a failing command, an unset variable — falls through to `models.json`
+rather than failing, which is friendlier than pi's own behaviour for inference.)
+
+Both accept a literal value, a `$VARIABLE` reference, or a `!command` that prints
+the key — so the key can stay in your secret manager:
+
+```json
+{
+  "requesty": {
+    "type": "api_key",
+    "key": "!secret-tool lookup requesty api-key"
+  }
+}
+```
+
+Only the provider settings are read from `~/.pi/agent/models.json`; when the file
+does not exist yet, defaults are used (`https://router.requesty.ai/v1`).
+
+Example using a literal key instead:
 
 ```json
 {
@@ -46,7 +70,12 @@ Example:
 }
 ```
 
-On startup, the extension fetches both `<baseUrl>/models` and `<baseUrl>/models/managed` using `apiKey` as the bearer token, merges the two lists (deduplicated by model ID), and registers the discovered models with pi.
+On startup, the extension fetches both `<baseUrl>/models` and `<baseUrl>/models/managed`
+using the resolved key as the bearer token, merges the two lists (deduplicated by model
+ID), and registers the discovered models with pi. Each request is bounded by a 10s
+timeout, because it runs before pi finishes loading. Without a credential discovery is
+skipped silently: pi resolves credentials for inference itself, and the models already
+listed in `models.json` keep working. The key is never written to `models.json`.
 
 ## Command
 
@@ -56,5 +85,12 @@ Inside pi:
 /requesty-models-sync
 ```
 
-The command fetches Requesty models using `~/.pi/agent/models.json` and writes the discovered model IDs back to the same file.
+The command resolves the key as described above, fetches the Requesty models and
+writes the discovered model IDs back to `~/.pi/agent/models.json`.
 Run `/reload` after syncing.
+
+## Tests
+
+```bash
+npm test
+```
