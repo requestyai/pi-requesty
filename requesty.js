@@ -1,5 +1,5 @@
-import { createProvider, envApiKeyAuth } from "@earendil-works/pi-ai";
-import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+// Pi exposes this entrypoint to extensions in both Node and bundled builds.
+import { createProvider, envApiKeyAuth, openAICompletionsApi } from "@earendil-works/pi-ai/compat";
 import { fetchModels } from "./models.js";
 import { DEFAULT_BASE_URL, EU_BASE_URL, normalizeBaseUrl } from "./endpoint.js";
 
