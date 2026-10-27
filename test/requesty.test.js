@@ -70,7 +70,7 @@ test("authenticated discovery persists, restores offline, and replaces removed m
   const { models, credentials, modelsStore } = await runtime();
   await login(models);
   globalThis.fetch = async (url, options) => {
-    assert.equal(url, "https://router.requesty.ai/v1/models");
+    assert.ok(["https://router.requesty.ai/v1/models", "https://router.requesty.ai/v1/models/managed"].includes(url));
     assert.equal(options.headers.Authorization, "Bearer test-key");
     assert.ok(options.signal instanceof AbortSignal);
     return catalog();
@@ -147,7 +147,7 @@ test("pi's runtime composes regional endpoint overrides with native auth and dis
     assert.equal(registry.getProviderDisplayName("requesty"), "Requesty");
     await modelRuntime.login("requesty", "api_key", { prompt: async (prompt) => prompt.type === "select" ? "default" : "regional-key", notify() {} });
     globalThis.fetch = async (url, options) => {
-      assert.equal(url, "https://router.eu.requesty.ai/v1/models");
+      assert.ok(["https://router.eu.requesty.ai/v1/models", "https://router.eu.requesty.ai/v1/models/managed"].includes(url));
       assert.equal(options.headers.Authorization, "Bearer regional-key");
       return catalog();
     };
@@ -247,7 +247,7 @@ for (const scenario of [
     const seen = [];
     globalThis.fetch = async (url, options) => {
       seen.push(String(url));
-      if (String(url).endsWith("/models")) {
+      if (String(url).includes("/models")) {
         assert.equal(options.headers.Authorization, "Bearer regional-key");
         return catalog();
       }
@@ -262,7 +262,7 @@ for (const scenario of [
       messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
     });
     assert.equal(answer.stopReason, "stop", answer.errorMessage);
-    assert.deepEqual(seen, [`${scenario.expected}/models`, `${scenario.expected}/chat/completions`]);
+    assert.deepEqual(seen, [`${scenario.expected}/models`, `${scenario.expected}/models/managed`, `${scenario.expected}/chat/completions`]);
   });
 }
 
@@ -297,4 +297,32 @@ test("regional policy errors explain endpoint setup without exposing the server 
   assert.match(message, /choose EU/);
   assert.match(message, /REQUESTY_BASE_URL/);
   assert.ok(!message.includes("private server data"));
+});
+
+test("managed policies merge with ordinary models without overriding duplicate IDs", async () => {
+  const { models } = await runtime();
+  await login(models);
+  globalThis.fetch = async (url) => String(url).endsWith("/models/managed")
+    ? catalog([{ ...entry, name: "Duplicate policy" }, { id: "policy/team", name: "Team router" }])
+    : catalog([{ ...entry, name: "Ordinary model" }]);
+  const result = await models.refresh();
+  assert.equal(result.errors.size, 0);
+  assert.deepEqual(models.getModels("requesty").map((model) => [model.id, model.name]), [
+    [entry.id, "Ordinary model"], ["policy/team", "Team router"],
+  ]);
+});
+
+test("managed endpoint failures leave ordinary models available", async () => {
+  const { models } = await runtime();
+  await login(models);
+  for (const failure of [
+    () => new Response("Not found", { status: 404 }),
+    () => Response.json({ unexpected: [] }),
+    () => { throw new Error("Network failure"); },
+  ]) {
+    globalThis.fetch = async (url) => String(url).endsWith("/models/managed") ? failure() : catalog();
+    const result = await models.refresh();
+    assert.equal(result.errors.size, 0);
+    assert.deepEqual(models.getModels("requesty").map((model) => model.id), [entry.id]);
+  }
 });

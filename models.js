@@ -68,13 +68,8 @@ export function assembleModels(payload, baseUrl = DEFAULT_BASE_URL) {
   return [...models.values()];
 }
 
-export async function fetchModels(context) {
-  const baseUrl = normalizeBaseUrl(context.credential?.env?.REQUESTY_BASE_URL ?? context.baseUrl ?? DEFAULT_BASE_URL);
-  const key = context.credential?.key;
-  const response = await fetch(`${baseUrl}/models`, {
-    headers: { Accept: "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
-    signal: AbortSignal.any([context.signal, AbortSignal.timeout(15000)]),
-  });
+async function fetchModelList(baseUrl, path, options) {
+  const response = await fetch(`${baseUrl}${path}`, options);
   if (!response.ok) {
     let regionalPolicy = false;
     if (response.status === 403) {
@@ -86,5 +81,32 @@ export async function fetchModels(context) {
       : response.status === 401 || response.status === 403 ? " Run /login requesty to check your API key and endpoint." : "";
     throw new Error(`Requesty model catalog at ${baseUrl} returned HTTP ${response.status}.${hint}`);
   }
-  return assembleModels(await response.json(), baseUrl);
+  const payload = await response.json();
+  if (!payload || !Array.isArray(payload.data)) {
+    throw new Error(`Invalid Requesty catalog at ${baseUrl}${path}: expected a data array.`);
+  }
+  return payload.data;
+}
+
+export async function fetchModels(context) {
+  const baseUrl = normalizeBaseUrl(context.credential?.env?.REQUESTY_BASE_URL ?? context.baseUrl ?? DEFAULT_BASE_URL);
+  const key = context.credential?.key;
+  const options = {
+    headers: { Accept: "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+    signal: AbortSignal.any([context.signal, AbortSignal.timeout(15000)]),
+  };
+  const [plain, managed] = await Promise.allSettled([
+    fetchModelList(baseUrl, "/models", options),
+    fetchModelList(baseUrl, "/models/managed", options),
+  ]);
+  // Ordinary models are required. Optional managed policies must not prevent
+  // a catalog refresh when their endpoint is unavailable or unsupported.
+  if (plain.status === "rejected") throw plain.reason;
+  const byId = new Map();
+  for (const model of [...plain.value, ...(managed.status === "fulfilled" ? managed.value : [])]) {
+    if (model && typeof model.id === "string" && !byId.has(model.id)) {
+      byId.set(model.id, model);
+    }
+  }
+  return assembleModels({ data: [...byId.values()] }, baseUrl);
 }

@@ -37,6 +37,8 @@ pi install git:github.com/requestyai/pi-requesty
 
 From a checkout containing this version, you can also run `pi install .`, or try it with `pi -e ./requesty.js`.
 
+Update with `pi update --extensions`, then restart pi or run `/reload`. To pin an install, append a full 40-character commit SHA (`@<sha>`); pinned installs stay at that commit, and short SHAs are not supported by `pi update`.
+
 **Requires pi 1.4+ and Node.js 22.19+.**
 
 ### 2. Log in
@@ -122,7 +124,7 @@ Pi manages credentials and configuration in its agent directory, including a cus
 
 ## Catalog & caching
 
-Pi refreshes models during interactive startup, when opening `/model`, and after login. The extension fetches `/models` from your selected endpoint using your resolved key, so your organization's approved models and key access lists apply.
+Pi refreshes models during interactive startup, when opening `/model`, and after login. The extension fetches `/models` and `/models/managed` from your selected endpoint using your resolved key, so your organization's approved models, managed routing policies, and key access lists apply. Results are deduplicated by model ID, keeping ordinary catalog entries when IDs overlap. If the optional managed-policy endpoint fails, ordinary models remain available.
 
 Catalogs are stored in pi's `models-store.json` and restored without network access for offline, print, and RPC startup. First-time setup needs a successful fetch. For an unattended first run, set your environment variables and initialize the cache with:
 
