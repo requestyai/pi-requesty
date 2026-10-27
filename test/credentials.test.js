@@ -376,6 +376,34 @@ describe("startup discovery", () => {
   }
 });
 
+describe("default headers", () => {
+  it("registers the Pi referer and title when models.json has no headers", async () => {
+    const { pi } = await runStartup({}, { auth: KEYRING });
+
+    assert.deepEqual(pi.providers.get("requesty").headers, { "HTTP-Referer": "https://pi.dev", "X-Title": "Pi" });
+  });
+
+  it("keeps configured headers and does not duplicate them in another case", async () => {
+    const headers = { "http-referer": "https://example.test", "X-Custom": "1" };
+    const { pi } = await runStartup({}, { auth: KEYRING, models: { providers: { requesty: { headers } } } });
+
+    assert.deepEqual(pi.providers.get("requesty").headers, {
+      "X-Title": "Pi",
+      "http-referer": "https://example.test",
+      "X-Custom": "1",
+    });
+  });
+
+  it("writes the default headers into a new models.json on sync", async () => {
+    await runStartup({}, { auth: KEYRING }, async (started) => {
+      await started.pi.commands.get("requesty-models-sync").handler("", createContext());
+    });
+
+    const { requesty } = JSON.parse(fs.readFileSync(MODELS_PATH, "utf8")).providers;
+    assert.deepEqual(requesty.headers, { "HTTP-Referer": "https://pi.dev", "X-Title": "Pi" });
+  });
+});
+
 describe("/requesty-models-sync", () => {
   async function runCommand(fixtures = { auth: KEYRING }) {
     const context = createContext();

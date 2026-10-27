@@ -55,6 +55,11 @@ Only the provider settings are read from `~/.pi/agent/models.json`; when the fil
 does not exist yet, defaults are used (`https://router.requesty.ai/v1` with the
 `openai-completions` API).
 
+The provider always sends `HTTP-Referer: https://pi.dev` and `X-Title: Pi`, which
+turn on Requesty's automatic prompt caching for Pi and label the traffic as Pi in
+analytics. Headers set in `models.json` take precedence, and `/requesty-models-sync`
+writes the defaults into the file when they are missing.
+
 A `!command` runs with the same shell pi uses (on Windows, pi's configured shell,
 usually Git Bash). It runs twice at startup: once for model discovery and once
 when pi resolves the key for inference.

@@ -7,6 +7,8 @@ const PROVIDER = "requesty";
 const DEFAULT_BASE_URL = "https://router.requesty.ai/v1";
 const DEFAULT_NAME = "Requesty";
 const DEFAULT_API = "openai-completions";
+// The router turns on Anthropic auto caching from the first turn for this referer.
+const DEFAULT_HEADERS = { "HTTP-Referer": "https://pi.dev", "X-Title": "Pi" };
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_MAX_TOKENS = 4096;
 const DISCOVERY_TIMEOUT_MS = 10_000;
@@ -65,6 +67,13 @@ function resolveRequestyKey(provider, options = {}) {
  * came from `auth.json` stays out of `provider`, so it cannot reach the registered
  * provider or a `models.json` write.
  */
+function withDefaultHeaders(headers) {
+  const configured = headers && typeof headers === "object" && !Array.isArray(headers) ? headers : {};
+  const names = new Set(Object.keys(configured).map((name) => name.toLowerCase()));
+  const missing = Object.entries(DEFAULT_HEADERS).filter(([name]) => !names.has(name.toLowerCase()));
+  return { ...Object.fromEntries(missing), ...configured };
+}
+
 function getRequestyConfig(options = {}) {
   const data = readModelsJson();
   const provider = data.providers[PROVIDER] ?? {};
@@ -82,7 +91,7 @@ function getRequestyConfig(options = {}) {
 
   return {
     data,
-    provider: { ...provider, name, baseUrl, api },
+    provider: { ...provider, name, baseUrl, api, headers: withDefaultHeaders(provider.headers) },
     key: resolved.key,
     keySource: resolved.source,
     keyProblem: resolved.key ? undefined : resolved.reason,
@@ -201,6 +210,7 @@ function updateModelsJson(data, models) {
     // pi needs both to load models.json custom models, and a fresh file has neither.
     baseUrl: existing.baseUrl || DEFAULT_BASE_URL,
     api: existing.api || DEFAULT_API,
+    headers: withDefaultHeaders(existing.headers),
     models: models.map((model) => ({
       id: model.id,
       name: model.name,
