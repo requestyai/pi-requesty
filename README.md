@@ -44,7 +44,7 @@ Example:
 }
 ```
 
-On startup, the extension fetches `<baseUrl>/models` using `apiKey` as the bearer token and registers discovered models with pi.
+On startup, the extension fetches both `<baseUrl>/models` and `<baseUrl>/models/managed` using `apiKey` as the bearer token, merges the two lists (deduplicated by model ID), and registers the discovered models with pi.
 
 ## Command
 

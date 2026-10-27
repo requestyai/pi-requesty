@@ -55,8 +55,8 @@ function getRequestyConfig() {
   };
 }
 
-async function discoverModels(provider) {
-  const response = await fetch(`${provider.baseUrl}/models`, {
+async function fetchModelList(provider, path) {
+  const response = await fetch(`${provider.baseUrl}${path}`, {
     headers: { Authorization: `Bearer ${provider.apiKey}` },
   });
 
@@ -69,8 +69,23 @@ async function discoverModels(provider) {
     throw new Error("Expected OpenAI-compatible response with a data array");
   }
 
-  return payload.data
-    .filter((model) => model && typeof model.id === "string" && model.id.length > 0)
+  return payload.data;
+}
+
+async function discoverModels(provider) {
+  const [plain, managed] = await Promise.all([
+    fetchModelList(provider, "/models"),
+    fetchModelList(provider, "/models/managed"),
+  ]);
+
+  const byId = new Map();
+  for (const model of [...plain, ...managed]) {
+    if (model && typeof model.id === "string" && model.id.length > 0 && !byId.has(model.id)) {
+      byId.set(model.id, model);
+    }
+  }
+
+  return [...byId.values()]
     .map((model) => ({
       id: model.id,
       name: typeof model.name === "string" && model.name.length > 0 ? model.name : model.id,
