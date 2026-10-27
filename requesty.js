@@ -6,6 +6,7 @@ import { authJsonPath, modelsJsonPath, readStoredApiKey, resolveConfigValue } fr
 const PROVIDER = "requesty";
 const DEFAULT_BASE_URL = "https://router.requesty.ai/v1";
 const DEFAULT_NAME = "Requesty";
+const DEFAULT_API = "openai-completions";
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_MAX_TOKENS = 4096;
 const DISCOVERY_TIMEOUT_MS = 10_000;
@@ -74,11 +75,14 @@ function getRequestyConfig(options = {}) {
     typeof provider.baseUrl === "string" && provider.baseUrl.length > 0 ? provider.baseUrl : DEFAULT_BASE_URL,
   );
 
+  // pi rejects a provider without `api`, which is what a missing models.json gives.
+  const api = typeof provider.api === "string" && provider.api.length > 0 ? provider.api : DEFAULT_API;
+
   const resolved = resolveRequestyKey(provider, options);
 
   return {
     data,
-    provider: { ...provider, name, baseUrl },
+    provider: { ...provider, name, baseUrl, api },
     key: resolved.key,
     keySource: resolved.source,
     keyProblem: resolved.key ? undefined : resolved.reason,
@@ -191,8 +195,12 @@ function writeModelsJson(data) {
  */
 function updateModelsJson(data, models) {
   data.providers = data.providers && typeof data.providers === "object" ? data.providers : {};
+  const existing = data.providers[PROVIDER] ?? {};
   data.providers[PROVIDER] = {
-    ...data.providers[PROVIDER],
+    ...existing,
+    // pi needs both to load models.json custom models, and a fresh file has neither.
+    baseUrl: existing.baseUrl || DEFAULT_BASE_URL,
+    api: existing.api || DEFAULT_API,
     models: models.map((model) => ({
       id: model.id,
       name: model.name,

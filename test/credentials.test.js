@@ -317,6 +317,19 @@ describe("startup discovery", () => {
     assert.equal(pi.providers.get("requesty").apiKey, undefined);
   });
 
+  it("registers the openai-completions API and the global base URL when models.json is missing", async () => {
+    const { pi } = await runStartup({}, { auth: KEYRING });
+
+    assert.equal(pi.providers.get("requesty").api, "openai-completions");
+    assert.equal(pi.providers.get("requesty").baseUrl, "https://router.requesty.ai/v1");
+  });
+
+  it("keeps the api configured in models.json", async () => {
+    const { pi } = await runStartup({}, { auth: KEYRING, models: { providers: { requesty: { api: "anthropic-messages" } } } });
+
+    assert.equal(pi.providers.get("requesty").api, "anthropic-messages");
+  });
+
   it("stays silent and off the network when no credential is configured", async () => {
     const { pi, calls, warnings } = await runStartup();
 
@@ -410,6 +423,15 @@ describe("/requesty-models-sync", () => {
     assert.equal(fs.statSync(MODELS_PATH).mode & 0o777, 0o600);
     assert.equal(fs.existsSync(`${MODELS_PATH}.tmp`), false);
     assert.equal(JSON.parse(fs.readFileSync(MODELS_PATH, "utf8")).providers.requesty.models.length, 1);
+  });
+
+  it("writes a models.json pi can load when there was none", async () => {
+    await runCommand();
+
+    const { requesty } = JSON.parse(fs.readFileSync(MODELS_PATH, "utf8")).providers;
+    assert.equal(requesty.api, "openai-completions");
+    assert.equal(requesty.baseUrl, "https://router.requesty.ai/v1");
+    assert.equal(requesty.apiKey, undefined);
   });
 
   it("keeps existing provider fields while replacing models", async () => {
