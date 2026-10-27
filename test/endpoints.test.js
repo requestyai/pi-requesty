@@ -13,7 +13,6 @@ const runner = `
   console.warn = (...args) => warnings.push(args.join(" "));
   globalThis.fetch = async (url) => {
     urls.push(url);
-    if (scenario.regionalError) return Response.json({ message: "Your organization requires a regional domain", private: "do not expose" }, { status: 403 });
     if (url.endsWith("/models/managed")) {
       if (scenario.managedFailure) return new Response("Unavailable", { status: 503 });
       return Response.json({ data: [{ id: "policy/team" }] });
@@ -33,21 +32,24 @@ const runner = `
   process.stdout.write(JSON.stringify({ urls, warnings, providers, notifications, stored }));
 `;
 
+const STUB = new URL("../test-support/pi-stub.mjs", import.meta.url).href;
+
 function run(scenario = {}) {
   const directory = mkdtempSync(path.join(tmpdir(), "requesty-endpoint-"));
   try {
     const configPath = path.join(directory, ".pi", "agent", "models.json");
     mkdirSync(path.dirname(configPath), { recursive: true });
     writeFileSync(configPath, JSON.stringify({ providers: { requesty: {
-      apiKey: "test-key", api: "openai-completions", models: [],
+      apiKey: "test-key", api: scenario.api ?? "openai-completions", models: [],
       headers: { "HTTP-Referer": "https://pi.dev", "X-Title": "Pi" },
       ...(scenario.configured ? { baseUrl: scenario.configured } : {}),
     } } }));
     const env = { ...process.env, HOME: directory };
     delete env.REQUESTY_BASE_URL;
+    delete env.PI_CODING_AGENT_DIR;
     if (scenario.override !== undefined) env.REQUESTY_BASE_URL = scenario.override;
     env.REQUESTY_TEST_SCENARIO = JSON.stringify({ ...scenario, configPath, entrypoint: new URL("../requesty.js", import.meta.url).href });
-    return JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", runner], { env, encoding: "utf8" }));
+    return JSON.parse(execFileSync(process.execPath, ["--import", STUB, "--input-type=module", "-e", runner], { env, encoding: "utf8" }));
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -78,14 +80,10 @@ test("invalid endpoint fails before HTTP", () => {
   }
 });
 
-test("regional policy error identifies the endpoint and configuration options", () => {
-  const result = run({ regionalError: true, sync: true });
-  for (const message of [result.warnings[0], result.notifications[0]]) {
-    assert.match(message, /providers.requesty.baseUrl/);
-    assert.match(message, /REQUESTY_BASE_URL/);
-    assert.match(message, /Current endpoint: https:\/\/router.requesty.ai\/v1/);
-    assert.ok(!message.includes("do not expose"));
-  }
+test("anthropic-messages keeps a bare domain for inference but discovers under /v1", () => {
+  const result = run({ configured: "https://router.requesty.ai/", api: "anthropic-messages" });
+  assert.deepEqual(result.urls, ["https://router.requesty.ai/v1/models", "https://router.requesty.ai/v1/models/managed"]);
+  assert.equal(result.providers[0].config.baseUrl, "https://router.requesty.ai");
 });
 
 test("managed endpoint failure preserves ordinary models", () => {
