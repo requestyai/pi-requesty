@@ -182,6 +182,64 @@ describe("resolveConfigValue", () => {
   });
 });
 
+describe("!command on Windows", () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+
+  function onWindows(shellConfig) {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    globalThis.__piShellConfig = shellConfig;
+  }
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", platform);
+    delete globalThis.__piShellConfig;
+  });
+
+  it("runs the command with pi's configured shell", () => {
+    const shell = path.join(agentDir, "configured-shell");
+    fs.writeFileSync(shell, '#!/bin/sh\nprintf "via-configured:%s" "$2"\n', { mode: 0o755 });
+    onWindows(() => ({ shell, args: ["-c"] }));
+
+    assert.equal(resolveConfigValue("!lookup requesty"), "via-configured:lookup requesty");
+  });
+
+  it("passes the command on stdin when pi's shell needs it", () => {
+    onWindows(() => ({ shell: "sh", args: ["-s"], commandTransport: "stdin" }));
+
+    assert.equal(resolveConfigValue("!printf sk-from-stdin"), "sk-from-stdin");
+  });
+
+  it("does not fall back when the configured shell ran the command and it failed", () => {
+    onWindows(() => ({ shell: "sh", args: ["-c"] }));
+
+    assert.equal(resolveConfigValue("!printf partial; exit 3"), undefined);
+  });
+
+  it("falls back to the default shell when pi has no usable shell", () => {
+    // With process.platform faked to win32, Node's default shell is %comspec% (Node reads that exact name).
+    const comSpec = path.join(agentDir, "fake-cmd");
+    fs.writeFileSync(comSpec, '#!/bin/sh\nprintf via-default-shell\n', { mode: 0o755 });
+    const originalComSpec = process.env.comspec;
+    process.env.comspec = comSpec;
+
+    try {
+      onWindows(() => {
+        throw new Error("No bash shell found");
+      });
+      assert.equal(resolveConfigValue("!lookup a"), "via-default-shell");
+
+      onWindows(() => ({ shell: path.join(agentDir, "missing-shell"), args: ["-c"] }));
+      assert.equal(resolveConfigValue("!lookup b"), "via-default-shell");
+    } finally {
+      if (originalComSpec === undefined) {
+        delete process.env.comspec;
+      } else {
+        process.env.comspec = originalComSpec;
+      }
+    }
+  });
+});
+
 describe("readStoredApiKey", () => {
   it("resolves a secret-manager command from auth.json", () => {
     writeAuthJson({ requesty: KEYRING });
@@ -340,6 +398,18 @@ describe("/requesty-models-sync", () => {
     assert.equal(JSON.parse(written).providers.requesty.apiKey, undefined);
     assert.equal(written.includes("sk-from-keyring"), false);
     assert.match(context.notifications.at(-1).message, /using the key from/);
+  });
+
+  it("writes models.json owner-only even when the previous file was world-readable", async () => {
+    writeModelsJson({ providers: { requesty: { apiKey: "sk-from-models-json" } } });
+    fs.chmodSync(MODELS_PATH, 0o644);
+    fs.writeFileSync(`${MODELS_PATH}.tmp`, "stale", { mode: 0o644 });
+
+    await runCommand({});
+
+    assert.equal(fs.statSync(MODELS_PATH).mode & 0o777, 0o600);
+    assert.equal(fs.existsSync(`${MODELS_PATH}.tmp`), false);
+    assert.equal(JSON.parse(fs.readFileSync(MODELS_PATH, "utf8")).providers.requesty.models.length, 1);
   });
 
   it("keeps existing provider fields while replacing models", async () => {

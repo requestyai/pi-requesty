@@ -174,9 +174,12 @@ function pricePerMillionTokens(value) {
 
 function writeModelsJson(data) {
   const modelsPath = modelsJsonPath();
-  fs.mkdirSync(path.dirname(modelsPath), { recursive: true });
+  fs.mkdirSync(path.dirname(modelsPath), { recursive: true, mode: 0o700 });
   const tmpPath = `${modelsPath}.tmp`;
-  fs.writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  // models.json can hold a literal apiKey: the replacement must stay owner-only.
+  // `mode` only applies when the file is created, so drop a leftover tmp first.
+  fs.rmSync(tmpPath, { force: true });
+  fs.writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   fs.renameSync(tmpPath, modelsPath);
 }
 
