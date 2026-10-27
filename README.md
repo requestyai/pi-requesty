@@ -52,7 +52,12 @@ the key — so the key can stay in your secret manager:
 ```
 
 Only the provider settings are read from `~/.pi/agent/models.json`; when the file
-does not exist yet, defaults are used (`https://router.requesty.ai/v1`).
+does not exist yet, defaults are used (`https://router.requesty.ai/v1` with the
+`openai-completions` API).
+
+A `!command` runs with the same shell pi uses (on Windows, pi's configured shell,
+usually Git Bash). It runs twice at startup: once for model discovery and once
+when pi resolves the key for inference.
 
 Example using a literal key instead:
 
@@ -86,7 +91,8 @@ Inside pi:
 ```
 
 The command resolves the key as described above, fetches the Requesty models and
-writes the discovered model IDs back to `~/.pi/agent/models.json`.
+writes the discovered model IDs back to `~/.pi/agent/models.json`. The file is
+rewritten owner-only (`0600`), because it can hold a literal key.
 Run `/reload` after syncing.
 
 ## Tests
