@@ -73,10 +73,24 @@ async function fetchModelList(provider, path) {
 }
 
 async function discoverModels(provider) {
-  const [plain, managed] = await Promise.all([
+  const [plainResult, managedResult] = await Promise.allSettled([
     fetchModelList(provider, "/models"),
     fetchModelList(provider, "/models/managed"),
   ]);
+
+  // /models is required; managed policies are optional so a failure there doesn't drop every model.
+  if (plainResult.status === "rejected") {
+    throw plainResult.reason;
+  }
+
+  const plain = plainResult.value;
+  let managed = [];
+  if (managedResult.status === "fulfilled") {
+    managed = managedResult.value;
+  } else {
+    const reason = managedResult.reason instanceof Error ? managedResult.reason.message : String(managedResult.reason);
+    console.warn(`[pi-requesty-model-discovery] managed policies discovery failed: ${reason}`);
+  }
 
   const byId = new Map();
   for (const model of [...plain, ...managed]) {
