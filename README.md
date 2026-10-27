@@ -5,10 +5,12 @@ The official Requesty extension for the Pi Coding Agent
 ## (Recommended) Install from Github Repo
 
 ```bash
-pi install git:github.com/requestyai/pi-requesty@c28e2f8
+pi install git:github.com/requestyai/pi-requesty
 ```
 
-NOTE: Version c28e2f8 points to out latest v0.2.7 version, and keeps you safe from supply chain attack.
+To get the latest version later, run `pi update --extensions`, then restart Pi or run `/reload`.
+
+To stay on a fixed version, append a full 40 character commit SHA (`@<sha>`). `pi update` fails on short SHAs and never moves a pinned install.
 
 ## Install locally
 
