@@ -86,6 +86,18 @@ test("anthropic-messages keeps a bare domain for inference but discovers under /
   assert.equal(result.providers[0].config.baseUrl, "https://router.requesty.ai");
 });
 
+test("anthropic-messages drops a trailing /v1 for inference", () => {
+  const result = run({ configured: "https://router.eu.requesty.ai/v1", api: "anthropic-messages" });
+  assert.deepEqual(result.urls, ["https://router.eu.requesty.ai/v1/models", "https://router.eu.requesty.ai/v1/models/managed"]);
+  assert.equal(result.providers[0].config.baseUrl, "https://router.eu.requesty.ai");
+});
+
+test("anthropic-messages keeps a custom proxy prefix", () => {
+  const result = run({ configured: "http://localhost:8080/gateway/v1", api: "anthropic-messages" });
+  assert.deepEqual(result.urls, ["http://localhost:8080/gateway/v1/models", "http://localhost:8080/gateway/v1/models/managed"]);
+  assert.equal(result.providers[0].config.baseUrl, "http://localhost:8080/gateway");
+});
+
 test("managed endpoint failure preserves ordinary models", () => {
   const result = run({ configured: "https://router.eu.requesty.ai/v1", managedFailure: true });
   assert.deepEqual(result.providers[0].config.models.map((model) => model.id), ["chat/model"]);

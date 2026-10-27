@@ -30,6 +30,10 @@ function withV1(baseUrl) {
   return new URL(baseUrl).pathname === "/" ? `${baseUrl}/v1` : baseUrl;
 }
 
+function withoutV1(baseUrl) {
+  return baseUrl.replace(/\/v1$/, "");
+}
+
 /**
  * Read models.json.
  *
@@ -102,7 +106,7 @@ function getRequestyConfig(options = {}) {
   const api = typeof provider.api === "string" && provider.api.length > 0 ? provider.api : DEFAULT_API;
 
   // The Anthropic client appends /v1/messages itself, but the model lists always live under /v1.
-  const baseUrl = api === "anthropic-messages" ? configuredUrl : withV1(configuredUrl);
+  const baseUrl = api === "anthropic-messages" ? withoutV1(configuredUrl) : withV1(configuredUrl);
 
   const resolved = resolveRequestyKey(provider, options);
 

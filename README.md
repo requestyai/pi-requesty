@@ -97,7 +97,7 @@ REQUESTY_BASE_URL="https://router.eu.requesty.ai/v1" pi
 
 Endpoint precedence is **`REQUESTY_BASE_URL` → `providers.requesty.baseUrl` → `https://router.requesty.ai/v1`**. The environment override is not written to `models.json`, so keep it set when launching pi.
 
-The URL must use HTTP(S), without embedded credentials, query parameters, or a fragment. Trailing slashes are removed. A bare domain gets `/v1` appended, except for inference with `"api": "anthropic-messages"`, where pi's Anthropic client adds `/v1/messages` itself. Model discovery always uses `/v1`.
+The URL must use HTTP(S), without embedded credentials, query parameters, or a fragment. Trailing slashes are removed. Write the URL with or without `/v1`: model discovery always uses `/v1/models`, and with `"api": "anthropic-messages"` a trailing `/v1` is dropped for inference because pi's Anthropic client adds `/v1/messages` itself.
 
 ## Command
 
