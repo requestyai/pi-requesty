@@ -4,12 +4,13 @@
  * Extensions import `@earendil-works/pi-coding-agent` and pi provides it at
  * runtime, so the package is not installed in this repo and `npm test` could not
  * resolve it. This module registers a resolver hook that answers that one
- * specifier with itself, and exports the two functions the extension uses:
+ * specifier with itself, and exports the functions the extension uses:
  *
  * - `getAgentDir()`  — mirrors pi's, including `PI_CODING_AGENT_DIR`
  * - `readStoredCredential()` — mirrors pi's reader: one synchronous read of
  *   `auth.json`, BOM-stripped, `undefined` on a missing or unreadable file, and
  *   no resolution of configured `!command`/`$VAR` values
+ * - `getShellConfig()` — the shell pi runs `!command` values with on Windows
  *
  * It lives outside `test/` because the test runner treats every file in that
  * directory as a test file.
@@ -36,6 +37,15 @@ export function readStoredCredential(providerId, authPath = path.join(getAgentDi
   } catch {
     return undefined;
   }
+}
+
+/** pi's `getShellConfig`, overridable per test through `globalThis.__piShellConfig`. */
+export function getShellConfig() {
+  const configured = globalThis.__piShellConfig;
+  if (typeof configured === "function") {
+    return configured();
+  }
+  return { shell: "sh", args: ["-c"] };
 }
 
 registerHooks({

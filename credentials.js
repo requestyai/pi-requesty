@@ -11,8 +11,9 @@
  * {@link resolveConfigValue}) and a resolved key is only ever held in memory: it
  * is never written back to `models.json`.
  */
+import * as piCodingAgent from "@earendil-works/pi-coding-agent";
 import { getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import path from "node:path";
 
 const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -96,9 +97,42 @@ function executeCommand(config) {
   return result;
 }
 
-function executeCommandUncached(config) {
+/**
+ * Mirrors pi's command execution: on Windows pi runs `!command` values with its
+ * configured shell (Git Bash) and falls back to the default shell only when that
+ * shell cannot be started. `getShellConfig` is read off the module namespace
+ * because older pi releases do not export it.
+ */
+function executeWithConfiguredShell(command) {
+  if (typeof piCodingAgent.getShellConfig !== "function") {
+    return { executed: false, value: undefined };
+  }
   try {
-    const output = execSync(config.slice(1), {
+    const { shell, args, commandTransport } = piCodingAgent.getShellConfig();
+    const commandFromStdin = commandTransport === "stdin";
+    const result = spawnSync(shell, commandFromStdin ? args : [...args, command], {
+      encoding: "utf-8",
+      input: commandFromStdin ? command : undefined,
+      timeout: COMMAND_TIMEOUT_MS,
+      stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "ignore"],
+      shell: false,
+      windowsHide: true,
+    });
+    if (result.error) {
+      return { executed: result.error.code !== "ENOENT", value: undefined };
+    }
+    if (result.status !== 0) {
+      return { executed: true, value: undefined };
+    }
+    return { executed: true, value: (result.stdout ?? "").trim() || undefined };
+  } catch {
+    return { executed: false, value: undefined };
+  }
+}
+
+function executeWithDefaultShell(command) {
+  try {
+    const output = execSync(command, {
       encoding: "utf-8",
       timeout: COMMAND_TIMEOUT_MS,
       stdio: ["ignore", "pipe", "ignore"],
@@ -107,6 +141,17 @@ function executeCommandUncached(config) {
   } catch {
     return undefined;
   }
+}
+
+function executeCommandUncached(config) {
+  const command = config.slice(1);
+  if (process.platform === "win32") {
+    const configured = executeWithConfiguredShell(command);
+    if (configured.executed) {
+      return configured.value;
+    }
+  }
+  return executeWithDefaultShell(command);
 }
 
 function resolveTemplate(config, env) {
