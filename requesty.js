@@ -1,42 +1,72 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
-const MODELS_JSON_PATH = path.join(os.homedir(), ".pi", "agent", "models.json");
+import { authJsonPath, modelsJsonPath, readStoredApiKey, resolveConfigValue } from "./credentials.js";
+
 const PROVIDER = "requesty";
 const DEFAULT_BASE_URL = "https://router.requesty.ai/v1";
 const DEFAULT_NAME = "Requesty";
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_MAX_TOKENS = 4096;
+const DISCOVERY_TIMEOUT_MS = 10_000;
 
 function normalizeBaseUrl(baseUrl) {
   return baseUrl.replace(/\/+$/, "");
 }
 
+/**
+ * Read models.json.
+ *
+ * A missing file is not an error: a stored `auth.json` credential is enough to
+ * discover models, and the write path creates the provider entry if needed. A
+ * malformed one still is: nothing here may quietly replace configuration it did
+ * not understand, because `/requesty-models-sync` writes this file back.
+ */
 function readModelsJson() {
-  if (!fs.existsSync(MODELS_JSON_PATH)) {
-    throw new Error(`${MODELS_JSON_PATH} does not exist`);
+  const modelsPath = modelsJsonPath();
+  if (!fs.existsSync(modelsPath)) {
+    return { providers: {} };
   }
 
-  const data = JSON.parse(fs.readFileSync(MODELS_JSON_PATH, "utf8"));
-  if (!data.providers || typeof data.providers !== "object") {
-    throw new Error(`${MODELS_JSON_PATH} does not define providers`);
+  const data = JSON.parse(fs.readFileSync(modelsPath, "utf8"));
+  if (!data.providers || typeof data.providers !== "object" || Array.isArray(data.providers)) {
+    throw new Error(`${modelsPath} does not define providers as an object`);
+  }
+
+  const configured = data.providers[PROVIDER];
+  if (configured !== undefined && (typeof configured !== "object" || configured === null || Array.isArray(configured))) {
+    throw new Error(`providers.${PROVIDER} in ${modelsPath} is not an object`);
   }
 
   return data;
 }
 
-function getRequestyConfig() {
+/**
+ * The key for model discovery: a stored `auth.json` credential first, then
+ * `providers.requesty.apiKey`. Either may be a `!command`, `$VAR` or a literal.
+ */
+function resolveRequestyKey(provider, options = {}) {
+  const stored = readStoredApiKey(PROVIDER, options);
+  if (stored.key) {
+    return stored;
+  }
+
+  const fromModelsJson = resolveConfigValue(provider?.apiKey, options.env);
+  if (fromModelsJson) {
+    return { key: fromModelsJson, source: `providers.${PROVIDER}.apiKey in ${modelsJsonPath()}` };
+  }
+
+  return { reason: stored.reason };
+}
+
+/**
+ * The provider settings plus the key used to reach `<baseUrl>/models`. A key that
+ * came from `auth.json` stays out of `provider`, so it cannot reach the registered
+ * provider or a `models.json` write.
+ */
+function getRequestyConfig(options = {}) {
   const data = readModelsJson();
-  const provider = data.providers[PROVIDER];
-
-  if (!provider || typeof provider !== "object") {
-    throw new Error(`${MODELS_JSON_PATH} does not define providers.${PROVIDER}`);
-  }
-
-  if (typeof provider.apiKey !== "string" || provider.apiKey.length === 0) {
-    throw new Error(`providers.${PROVIDER}.apiKey must be set in ${MODELS_JSON_PATH}`);
-  }
+  const provider = data.providers[PROVIDER] ?? {};
 
   const name = typeof provider.name === "string" && provider.name.length > 0 ? provider.name : DEFAULT_NAME;
 
@@ -44,21 +74,34 @@ function getRequestyConfig() {
     typeof provider.baseUrl === "string" && provider.baseUrl.length > 0 ? provider.baseUrl : DEFAULT_BASE_URL,
   );
 
+  const resolved = resolveRequestyKey(provider, options);
+
   return {
     data,
-    provider: {
-      ...provider,
-      name: name,
-      baseUrl: baseUrl,
-      apiKey: provider.apiKey,
-    },
+    provider: { ...provider, name, baseUrl },
+    key: resolved.key,
+    keySource: resolved.source,
+    keyProblem: resolved.key ? undefined : resolved.reason,
   };
 }
 
-async function fetchModelList(provider, path) {
-  const response = await fetch(`${provider.baseUrl}${path}`, {
-    headers: { Authorization: `Bearer ${provider.apiKey}` },
-  });
+async function fetchModelList({ baseUrl, apiKey }, path) {
+  let response;
+
+  try {
+    // Bounded on purpose: this runs while pi is still starting up, and pi awaits
+    // the extension while loading it, so an endpoint that accepts and never
+    // answers would otherwise keep the TUI from ever appearing.
+    response = await fetch(`${baseUrl}${path}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw new Error(`no response from ${baseUrl}${path} within ${DISCOVERY_TIMEOUT_MS}ms`);
+    }
+    throw error;
+  }
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} ${response.statusText}`);
@@ -72,10 +115,10 @@ async function fetchModelList(provider, path) {
   return payload.data;
 }
 
-async function discoverModels(provider) {
+async function discoverModels(connection) {
   const [plainResult, managedResult] = await Promise.allSettled([
-    fetchModelList(provider, "/models"),
-    fetchModelList(provider, "/models/managed"),
+    fetchModelList(connection, "/models"),
+    fetchModelList(connection, "/models/managed"),
   ]);
 
   // /models is required; managed policies are optional so a failure there doesn't drop every model.
@@ -130,13 +173,21 @@ function pricePerMillionTokens(value) {
 }
 
 function writeModelsJson(data) {
-  fs.mkdirSync(path.dirname(MODELS_JSON_PATH), { recursive: true });
-  const tmpPath = `${MODELS_JSON_PATH}.tmp`;
+  const modelsPath = modelsJsonPath();
+  fs.mkdirSync(path.dirname(modelsPath), { recursive: true });
+  const tmpPath = `${modelsPath}.tmp`;
   fs.writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-  fs.renameSync(tmpPath, MODELS_JSON_PATH);
+  fs.renameSync(tmpPath, modelsPath);
 }
 
+/**
+ * Write the discovered models back to models.json.
+ *
+ * Only `models` is replaced: a key that came from `auth.json` stays out of the
+ * file, and a malformed or hand-edited provider entry keeps its other fields.
+ */
 function updateModelsJson(data, models) {
+  data.providers = data.providers && typeof data.providers === "object" ? data.providers : {};
   data.providers[PROVIDER] = {
     ...data.providers[PROVIDER],
     models: models.map((model) => ({
@@ -153,6 +204,15 @@ function updateModelsJson(data, models) {
   writeModelsJson(data);
 }
 
+const KEY_HELP = [
+  "Set the Requesty key in either place:",
+  `  ${authJsonPath()}`,
+  '    { "requesty": { "type": "api_key", "key": "!secret-tool lookup requesty api-key" } }',
+  `  ${modelsJsonPath()}`,
+  '    { "providers": { "requesty": { "apiKey": "rqsty-sk-..." } } }',
+  'Both accept a "!command", a "$VARIABLE" reference, or a literal value.',
+].join("\n");
+
 export default async function (pi) {
   pi.registerCommand("requesty-models-sync", {
     description: "Dynamically discover Requesty models and update the local models.json.",
@@ -160,10 +220,19 @@ export default async function (pi) {
       ctx.ui.setStatus("requesty-models-sync", "Discovering Requesty models...");
 
       try {
-        const { data, provider } = getRequestyConfig();
-        const models = await discoverModels(provider);
+        const { data, provider, key, keySource, keyProblem } = getRequestyConfig();
+
+        if (!key) {
+          ctx.ui.notify(`No Requesty credential available.\n\n${keyProblem}\n\n${KEY_HELP}`, "error");
+          return;
+        }
+
+        const models = await discoverModels({ baseUrl: provider.baseUrl, apiKey: key });
         updateModelsJson(data, models);
-        ctx.ui.notify(`Discovered ${models.length} Requesty model(s). Run /reload to use models.json changes.`, "success");
+        ctx.ui.notify(
+          `Discovered ${models.length} Requesty model(s) using the key from ${keySource}. Run /reload to use models.json changes.`,
+          "success",
+        );
       } catch (error) {
         ctx.ui.notify(`Discovery failed: ${error instanceof Error ? error.message : String(error)}`, "error");
       } finally {
@@ -173,8 +242,16 @@ export default async function (pi) {
   });
 
   try {
-    const { provider } = getRequestyConfig();
-    const models = await discoverModels(provider);
+    const { provider, key } = getRequestyConfig();
+
+    // No credential is not a failure: Pi resolves credentials for inference
+    // itself, and models already listed in models.json keep working. Discovery
+    // is the only thing that needs the key, so skip it quietly.
+    if (!key) {
+      return;
+    }
+
+    const models = await discoverModels({ baseUrl: provider.baseUrl, apiKey: key });
 
     if (models.length > 0) {
       pi.registerProvider(PROVIDER, {
